@@ -728,7 +728,7 @@ int pdf_page_set_size(struct pdf_doc *pdf, struct pdf_object *page, int width,
     return 0;
 }
 
-static int pdf_save_object(struct pdf_doc *pdf, FILE *fp, int index)
+static int pdf_save_object(struct pdf_doc *pdf, struct dstr *str, int index)
 {
     struct pdf_object *object = pdf_get_object(pdf, index);
     if (!object)
@@ -737,20 +737,20 @@ static int pdf_save_object(struct pdf_doc *pdf, FILE *fp, int index)
     if (object->type == OBJ_none)
         return -ENOENT;
 
-    object->offset = ftell(fp);
+    object->offset = dstr_len(str);
 
-    fprintf(fp, "%d 0 obj\r\n", index);
+    dstr_printf(str, "%d 0 obj\r\n", index);
 
     switch (object->type) {
     case OBJ_stream:
     case OBJ_image: {
-        fwrite(dstr_data(&object->stream), dstr_len(&object->stream), 1, fp);
+        dstr_append_data(str, dstr_data(&object->stream), dstr_len(&object->stream));
         break;
     }
     case OBJ_info: {
         struct pdf_info *info = object->info;
 
-        fprintf(fp,
+        dstr_printf(str,
                 "<<\r\n"
                 "  /Creator (%s)\r\n"
                 "  /Producer (%s)\r\n"
@@ -768,42 +768,42 @@ static int pdf_save_object(struct pdf_doc *pdf, FILE *fp, int index)
         struct pdf_object *pages = pdf_find_first_object(pdf, OBJ_pages);
         struct pdf_object *image = pdf_find_first_object(pdf, OBJ_image);
 
-        fprintf(fp,
+        dstr_printf(str,
                 "<<\r\n"
                 "/Type /Page\r\n"
                 "/Parent %d 0 R\r\n",
                 pages->index);
-        fprintf(fp, "/MediaBox [0 0 %d %d]\r\n", object->page.width,
+        dstr_printf(str, "/MediaBox [0 0 %d %d]\r\n", object->page.width,
                 object->page.height);
-        fprintf(fp, "/Resources <<\r\n");
-        fprintf(fp, "  /Font <<\r\n");
+        dstr_printf(str, "/Resources <<\r\n");
+        dstr_printf(str, "  /Font <<\r\n");
         for (struct pdf_object *font = pdf_find_first_object(pdf, OBJ_font);
              font; font = font->next)
-            fprintf(fp, "    /F%d %d 0 R\r\n", font->font.index, font->index);
-        fprintf(fp, "  >>\r\n");
+            dstr_printf(str, "    /F%d %d 0 R\r\n", font->font.index, font->index);
+        dstr_printf(str, "  >>\r\n");
         // We trim transparency to just 4-bits
-        fprintf(fp, "  /ExtGState <<\r\n");
+        dstr_printf(str, "  /ExtGState <<\r\n");
         for (int i = 0; i < 16; i++) {
-            fprintf(fp, "  /GS%d <</ca %f>>\r\n", i, (float)(15 - i) / 15);
+            dstr_printf(str, "  /GS%d <</ca %f>>\r\n", i, (float)(15 - i) / 15);
         }
-        fprintf(fp, "  >>\r\n");
+        dstr_printf(str, "  >>\r\n");
 
         if (image) {
-            fprintf(fp, "  /XObject <<");
+            dstr_printf(str, "  /XObject <<");
             for (; image; image = image->next)
-                fprintf(fp, "/Image%d %d 0 R ", image->index, image->index);
-            fprintf(fp, ">>\r\n");
+                dstr_printf(str, "/Image%d %d 0 R ", image->index, image->index);
+            dstr_printf(str, ">>\r\n");
         }
 
-        fprintf(fp, ">>\r\n");
-        fprintf(fp, "/Contents [\r\n");
+        dstr_printf(str, ">>\r\n");
+        dstr_printf(str, "/Contents [\r\n");
         for (int i = 0; i < flexarray_size(&object->page.children); i++) {
             struct pdf_object *child =
                 flexarray_get(&object->page.children, i);
-            fprintf(fp, "%d 0 R\r\n", child->index);
+            dstr_printf(str, "%d 0 R\r\n", child->index);
         }
-        fprintf(fp, "]\r\n");
-        fprintf(fp, ">>\r\n");
+        dstr_printf(str, "]\r\n");
+        dstr_printf(str, ">>\r\n");
         break;
     }
 
@@ -815,7 +815,7 @@ static int pdf_save_object(struct pdf_doc *pdf, FILE *fp, int index)
             parent = pdf_find_first_object(pdf, OBJ_outline);
         if (!object->bookmark.page)
             break;
-        fprintf(fp,
+        dstr_printf(str,
                 "<<\r\n"
                 "/A << /Type /Action\r\n"
                 "      /S /GoTo\r\n"
@@ -830,8 +830,8 @@ static int pdf_save_object(struct pdf_doc *pdf, FILE *fp, int index)
             struct pdf_object *f, *l;
             f = flexarray_get(&object->bookmark.children, 0);
             l = flexarray_get(&object->bookmark.children, nchildren - 1);
-            fprintf(fp, "/First %d 0 R\r\n", f->index);
-            fprintf(fp, "/Last %d 0 R\r\n", l->index);
+            dstr_printf(str, "/First %d 0 R\r\n", f->index);
+            dstr_printf(str, "/Last %d 0 R\r\n", l->index);
         }
         // Find the previous bookmark with the same parent
         for (other = object->prev;
@@ -839,15 +839,15 @@ static int pdf_save_object(struct pdf_doc *pdf, FILE *fp, int index)
              other = other->prev)
             ;
         if (other)
-            fprintf(fp, "/Prev %d 0 R\r\n", other->index);
+            dstr_printf(str, "/Prev %d 0 R\r\n", other->index);
         // Find the next bookmark with the same parent
         for (other = object->next;
              other && other->bookmark.parent != object->bookmark.parent;
              other = other->next)
             ;
         if (other)
-            fprintf(fp, "/Next %d 0 R\r\n", other->index);
-        fprintf(fp, ">>\r\n");
+            dstr_printf(str, "/Next %d 0 R\r\n", other->index);
+        dstr_printf(str, ">>\r\n");
         break;
     }
 
@@ -866,7 +866,7 @@ static int pdf_save_object(struct pdf_doc *pdf, FILE *fp, int index)
             }
 
             /* Bookmark outline */
-            fprintf(fp,
+            dstr_printf(str,
                     "<<\r\n"
                     "/Count %d\r\n"
                     "/Type /Outlines\r\n"
@@ -879,7 +879,7 @@ static int pdf_save_object(struct pdf_doc *pdf, FILE *fp, int index)
     }
 
     case OBJ_font:
-        fprintf(fp,
+        dstr_printf(str,
                 "<<\r\n"
                 "  /Type /Font\r\n"
                 "  /Subtype /Type1\r\n"
@@ -892,17 +892,17 @@ static int pdf_save_object(struct pdf_doc *pdf, FILE *fp, int index)
     case OBJ_pages: {
         int npages = 0;
 
-        fprintf(fp, "<<\r\n"
+        dstr_printf(str, "<<\r\n"
                     "/Type /Pages\r\n"
                     "/Kids [ ");
         for (struct pdf_object *page = pdf_find_first_object(pdf, OBJ_page);
              page; page = page->next) {
             npages++;
-            fprintf(fp, "%d 0 R ", page->index);
+            dstr_printf(str, "%d 0 R ", page->index);
         }
-        fprintf(fp, "]\r\n");
-        fprintf(fp, "/Count %d\r\n", npages);
-        fprintf(fp, ">>\r\n");
+        dstr_printf(str, "]\r\n");
+        dstr_printf(str, "/Count %d\r\n", npages);
+        dstr_printf(str, ">>\r\n");
         break;
     }
 
@@ -910,14 +910,14 @@ static int pdf_save_object(struct pdf_doc *pdf, FILE *fp, int index)
         struct pdf_object *outline = pdf_find_first_object(pdf, OBJ_outline);
         struct pdf_object *pages = pdf_find_first_object(pdf, OBJ_pages);
 
-        fprintf(fp, "<<\r\n"
+        dstr_printf(str, "<<\r\n"
                     "/Type /Catalog\r\n");
         if (outline)
-            fprintf(fp,
+            dstr_printf(str,
                     "/Outlines %d 0 R\r\n"
                     "/PageMode /UseOutlines\r\n",
                     outline->index);
-        fprintf(fp,
+        dstr_printf(str,
                 "/Pages %d 0 R\r\n"
                 ">>\r\n",
                 pages->index);
@@ -929,7 +929,7 @@ static int pdf_save_object(struct pdf_doc *pdf, FILE *fp, int index)
                            object->type);
     }
 
-    fprintf(fp, "endobj\r\n");
+    dstr_printf(str, "endobj\r\n");
 
     return 0;
 }
@@ -943,53 +943,72 @@ static uint64_t hash(uint64_t hash, const void *data, size_t len)
     return hash;
 }
 
-int pdf_save_file(struct pdf_doc *pdf, FILE *fp)
+struct dstr pdf_get_finalized(struct pdf_doc *pdf) 
 {
+    struct dstr str = INIT_DSTR;
+   
     struct pdf_object *obj;
     int xref_offset;
     int xref_count = 0;
     uint64_t id1, id2;
     time_t now = time(NULL);
 
-    fprintf(fp, "%%PDF-1.2\r\n");
+    dstr_printf(&str, "%%PDF-1.2\r\n");
     /* Hibit bytes */
-    fprintf(fp, "%c%c%c%c%c\r\n", 0x25, 0xc7, 0xec, 0x8f, 0xa2);
+    dstr_printf(&str, "%c%c%c%c%c\r\n", 0x25, 0xc7, 0xec, 0x8f, 0xa2);
 
     /* Dump all the objects & get their file offsets */
     for (int i = 0; i < flexarray_size(&pdf->objects); i++)
-        if (pdf_save_object(pdf, fp, i) >= 0)
+        if (pdf_save_object(pdf, &str, i) >= 0)
             xref_count++;
 
     /* xref */
-    xref_offset = ftell(fp);
-    fprintf(fp, "xref\r\n");
-    fprintf(fp, "0 %d\r\n", xref_count + 1);
-    fprintf(fp, "0000000000 65535 f\r\n");
+    xref_offset = dstr_len(&str);
+    dstr_printf(&str, "xref\r\n");
+    dstr_printf(&str, "0 %d\r\n", xref_count + 1);
+    dstr_printf(&str, "0000000000 65535 f\r\n");
     for (int i = 0; i < flexarray_size(&pdf->objects); i++) {
         obj = pdf_get_object(pdf, i);
         if (obj->type != OBJ_none)
-            fprintf(fp, "%10.10d 00000 n\r\n", obj->offset);
+            dstr_printf(&str, "%10.10d 00000 n\r\n", obj->offset);
     }
 
-    fprintf(fp,
+    dstr_printf(&str,
             "trailer\r\n"
             "<<\r\n"
             "/Size %d\r\n",
             xref_count + 1);
     obj = pdf_find_first_object(pdf, OBJ_catalog);
-    fprintf(fp, "/Root %d 0 R\r\n", obj->index);
+    dstr_printf(&str, "/Root %d 0 R\r\n", obj->index);
     obj = pdf_find_first_object(pdf, OBJ_info);
-    fprintf(fp, "/Info %d 0 R\r\n", obj->index);
+    dstr_printf(&str, "/Info %d 0 R\r\n", obj->index);
     /* Generate document unique IDs */
     id1 = hash(5381, obj->info, sizeof(struct pdf_info));
     id1 = hash(id1, &xref_count, sizeof(xref_count));
     id2 = hash(5381, &now, sizeof(now));
-    fprintf(fp, "/ID [<%16.16" PRIx64 "> <%16.16" PRIx64 ">]\r\n", id1, id2);
-    fprintf(fp, ">>\r\n"
+    dstr_printf(&str, "/ID [<%16.16" PRIx64 "> <%16.16" PRIx64 ">]\r\n", id1, id2);
+    dstr_printf(&str, ">>\r\n"
                 "startxref\r\n");
-    fprintf(fp, "%d\r\n", xref_offset);
-    fprintf(fp, "%%%%EOF\r\n");
+    dstr_printf(&str, "%d\r\n", xref_offset);
+    dstr_printf(&str, "%%%%EOF\r\n");
 
+    return str;
+}
+
+int pdf_get_string(struct pdf_doc *pdf, const char **string, size_t *length)
+{
+    const struct dstr str = pdf_get_finalized(pdf);
+    *string = dstr_data(&str);
+    *length = dstr_len(&str);
+    return 0;
+}
+
+int pdf_save_file(struct pdf_doc *pdf, FILE *fp)
+{
+    const struct dstr str = pdf_get_finalized(pdf);
+    for(size_t i = 0; i < dstr_len(&str); i++) {
+        fprintf(fp, "%c", dstr_data(&str)[i]);
+    }     
     return 0;
 }
 

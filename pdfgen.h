@@ -249,6 +249,15 @@ int pdf_page_set_size(struct pdf_doc *pdf, struct pdf_object *page, int width,
                       int height);
 
 /**
+ * Retrieve the whole pdf document as a string buffer
+ * @param pdf PDF document which will be turned into a string
+ * @param str The buffer which contains the page data
+ * @param length Size of the buffer
+ * @return < 0 on failure, >= 0 on success
+ */
+int pdf_get_string(struct pdf_doc *pdf, const char **str, size_t *length);
+
+/**
  * Save the given pdf document to the supplied filename.
  * @param pdf PDF document to save
  * @param filename Name of the file to store the PDF into (NULL for stdout)
